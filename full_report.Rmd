@@ -1,0 +1,564 @@
+---
+title: "Is this house a good investment?"
+author: "by Mohamed Khanafer"
+date: "04/06/2020"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r global_options, echo = FALSE, include = FALSE}
+options(width = 999)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      cache = FALSE, tidy = FALSE, size = "small")
+```
+
+# 1. Introduction
+
+My initial idea for this project came from Spot a Home, which is the Housing platform I used when I wanted to chose my apartment here in Madrid. On their platform, the main tool I used to choose this apartment (which turned out to be amazing) was actually their interactive map. What made it very handy was this ability to be able to filter some of the apartments’ attributes for my preferences. 
+
+Seeing that the SpData package - which we are required to choose a dataset from - had housing datasets, it was a perfect to implement my idea. 
+
+Because the result turned out to be pretty good, I decided to go a step further and implement my prototype Shiny Application on real and current data. I thus web scraped data from Idealista’s website (one of Spain’s main housing platforms) and used a variant of the same Shiny application on the data.
+
+I here first start by showing the Shiny Application for the Lucas County Housing Dataset, plot some graphs related to this dataset and explain the development of the map and the application.  I then go to the above mentioned second application using real data and explain more on the web scrapping and development.
+
+\
+\
+
+# 2. The Shiny Application embedded
+
+The first Shiny Application, running on the Lucas County Housing dataset, can be seen below:
+
+```{r echo=FALSE}
+library(prettydoc)
+library(shiny)
+library(shinydashboard)
+library(leaflet)
+library(RColorBrewer)
+library(formattable)
+library(dplyr)
+library(spData)
+library(sp)
+library(rgdal)
+
+################## DATA PREPARATION ##################
+data("house")
+sale_data <- as.data.frame(house)
+
+# Changing the stories column into numbers
+sale_data$stories <- as.character(sale_data[,"stories"])
+sale_data$stories[sale_data$stories == "one+half"] <- "1.5"
+sale_data$stories[sale_data$stories == "one"] <- "1"
+sale_data$stories[sale_data$stories == "two" | sale_data$stories == "bilevel" ] <- "2"
+sale_data$stories[sale_data$stories == "two+half"] <- "2.5"
+sale_data$stories[sale_data$stories == "three"] <- "3"
+sale_data$stories[sale_data$stories == "multilvl"] <- "4"
+sale_data$stories <- as.numeric(sale_data[,"stories"])
+
+# Making the date format adequate
+names(sale_data)[names(sale_data) == "sdate"] <- "sale_date"
+sale_data[,"sale_date"] <- as.Date(as.character(sale_data[,"sale_date"]),"%y%m%d")
+
+# Creating a new column to get Underpriced/Overpriced feature
+sale_data["property_type"] <- sale_data$avalue - sale_data$price
+sale_data$property_type[sale_data$property_type >0] <- "Underpriced Houses"
+sale_data$property_type[sale_data$property_type <0] <- "Overpriced Houses"
+
+# Fixing the coordinates into latitudes and longitudes
+changing <- sale_data[, c("lat", "long")]
+nad83_coords <- changing
+coordinates(nad83_coords) <- c('lat', 'long')
+proj4string(nad83_coords)=CRS("+proj=lcc +lat_0=39.6666666666667 
++lon_0=-82.5 +lat_1=41.7 +lat_2=40.4333333333333 +x_0=155000
++y_0=-70000 +ellps=GRS80 +units=ft +no_defs")
+coordinates_deg <- spTransform(nad83_coords,CRS("+init=epsg:4326"))
+DF <- as.data.frame(coordinates_deg)
+names(DF)[names(DF) == "lat"] <- "longitude"
+names(DF)[names(DF) == "long"] <- "latitude"
+sale_data <- select(sale_data,-c("s1993","s1994","s1995","s1996", "s1997", "s1998", "long", "lat"))
+sale_data$longitude <- DF$longitude
+sale_data$latitude <- DF$latitude
+
+# Function used for the sizing of the data points on the Leaflet map
+circle.scaler <- function(x){((x-min(x))/(max(x)-min(x)))*500}
+
+################## SHINY APPLICATION: UI ##################
+shinyApp(
+  options = list(height=750),
+  ui <- dashboardPage(
+  
+  skin = "blue",
+  dashboardHeader(title = "Lucas County OH Application"),
+  dashboardSidebar(
+      sidebarMenu(
+        menuItem("Plot", tabName = "plot", icon = icon("map"))
+      ),
+    
+    selectInput("propertytype", "Property Value", 
+                choices = c("Underpriced Houses",
+                            "Overpriced Houses")),
+    
+    selectInput("colorscalevar", "Color Scale Variable",
+                choices = c("Square Feet" = "TLA",
+                            "Sale Price" = "price",
+                            "Year Built" = "yrbuilt",
+                             
+                            "Lot Size" = "lotsize",
+                            "Stories" = "stories", 
+                            "Bedrooms" = "beds", 
+                            "Bathrooms" = "baths",
+                            "Garage Size"= "garagesqft",
+                            "Rooms" = "rooms",
+                            "Appraised Value" = "avalue")),
+    
+    selectInput("circlesizevar", "Circle Size Variable", 
+                choices = c("Sale Price" = "price",
+                            "Appraised Value" = "avalue",
+                            "Lot Size" = "lotsize",
+                            "Square Feet" = "TLA",
+                            "None"= "none",
+                            "Garage Size"= "garagesqft",
+                            "Stories" = "stories", 
+                            "Bedrooms" = "beds",
+                            "Rooms" = "rooms",
+                            "Bathrooms" = "baths"
+                            )),
+    
+    sliderInput("yearbuilt", "Year Built", 
+                min(sale_data$yrbuilt),
+                max(sale_data$yrbuilt),
+                value = range(sale_data$yrbuilt), sep =""),
+    
+    sliderInput("saledate", "Sale Date",
+                min(sale_data$sale_date),
+                max(sale_data$sale_date),
+                value =range(sale_data$sale_date)),
+    
+    uiOutput("PriceSlider"),
+    
+    menuItem("Linear Regression", tabName = "regression", icon = icon("dashboard")) 
+    
+),
+  
+  dashboardBody(
+    fluidRow(box(width= 12, leafletOutput("map"))),
+    tabItems(
+      tabItem("regression",
+              fluidRow(box(width= 12,
+                titlePanel("Simple Regression Model to understand Price"),
+                sidebarLayout(
+                  sidebarPanel(
+                    selectInput("outcome", label = h3("Outcome"),
+                                choices = list("Price" = "price",
+                                               "Square Feet" = "TLA"), selected = 1),
+                    
+                    selectInput("indepvar", label = h3("Explanatory variable"),
+                                choices = list("Square Feet" = "TLA",
+                                               "Apraised Value" = "avalue",
+                                               "Rooms" = "rooms",
+                                               "Bedrooms" = "beds",
+                                               "Bathrooms" = "baths"), selected = 1)),
+                  
+                  mainPanel(tabsetPanel(type = "tabs",
+                                
+                                tabPanel("Plot", plotOutput("scatterplot")), # Plot
+                                tabPanel("Distribution", # Plots of distributions
+                                         fluidRow(
+                                           column(6, plotOutput("distribution1")),
+                                           column(6, plotOutput("distribution2")))
+                                ),
+                                tabPanel("Model Summary", verbatimTextOutput("summary")), # Regression output
+                                tabPanel("Data", DT::dataTableOutput('tbl')) # Data as datatable
+                                
+                    )
+                  )
+                ))))
+    ))),
+  
+
+  
+################## SHINY APPLICATION: SERVER ##################
+  
+server <- function(input, output, session) {
+  
+  filteredData <- reactive({
+    sale_data[sale_data$price >= input$priceslideroutput[1] & 
+                sale_data$price <= input$priceslideroutput[2] & 
+                sale_data$property_type == input$propertytype &
+                sale_data$yrbuilt >= input$yearbuilt[1] & 
+                sale_data$yrbuilt <= input$yearbuilt[2] & 
+                sale_data$sale_date >= input$saledate[1] & 
+                sale_data$sale_date <= input$saledate[2], ]})
+  
+  
+  colorpal <- reactive({
+    colorNumeric("YlGnBu", sale_data[sale_data$property_type ==input$propertytype,input$colorscalevar])})
+  
+  output$PriceSlider <- renderUI({
+    sliderInput("priceslideroutput", "Sale Price", min(sale_data[sale_data$property_type ==input$propertytype,"price"]), 
+                max(sale_data[sale_data$property_type ==input$propertytype,"price"]), 
+                range(sale_data[sale_data$property_type ==input$propertytype,"price"]))})
+  
+  
+  
+  output$map <- renderLeaflet({
+    leaflet(sale_data) %>% 
+      
+      addProviderTiles(providers$CartoDB.Positron, group = "CartoDB") %>%
+      #addProviderTiles(providers$Stamen.Toner, group = "Toner") %>%
+      #addProviderTiles(providers$Stamen.TonerLite, group = "Toner Lite") %>%
+      #addLayersControl(
+      #baseGroups = c("CartoDB", "Toner", "Toner Lite"),
+      #options = layersControlOptions(collapsed = TRUE))
+      setView(lat = 41.671810, lng = -83.573252, zoom=11.5)
+      })
+  
+  
+  observe({
+    pal <- colorpal()
+    
+    leafletProxy("map", data = filteredData()) %>% clearShapes() %>%
+      addCircles(radius = ~if(input$circlesizevar=="none"){80}
+                 else{circle.scaler(eval(as.name(paste(input$circlesizevar))))}, 
+                 weight = 0.2, 
+                 color = "#777777", 
+                 fillColor = ~pal(sale_data[sale_data$property_type ==input$propertytype,input$colorscalevar]),
+                 fillOpacity = 0.6, 
+                 popup = ~paste(case_when(input$colorscalevar == "price"  ~"Sale Price: ",
+                                          input$colorscalevar == "yrbuilt" ~"Year Built: ",
+                                          input$colorscalevar == "TLA" ~ "Square Feet: ",
+                                          input$colorscalevar == "lotsize" ~ "Lot Size: ",
+                                          input$colorscalevar == "stories" ~ "Stories: ",
+                                          
+                                          input$colorscalevar == "beds" ~ "Bedrooms: ",
+                                          input$colorscalevar == "baths" ~ "Bathrooms: ",
+                                          input$colorscalevar == "garagesqft" ~ "Garage Size: ",
+                                          input$colorscalevar == "rooms" ~ "Rooms",
+                                          input$colorscalevar ==  "avalue" ~ "Appraised Value"),
+                                if(input$colorscalevar== "price"){currency(price,digits=0L)}
+                                else {eval(as.name(paste(input$colorscalevar)))},
+                                '<br>' , case_when(input$circlesizevar == "none"  ~"Apraised Value: ",
+                                                   input$circlesizevar == "price"  ~"Sale Price:",
+                                                   input$circlesizevar == "yrbuilt" ~"Year Built: ",
+                                                   input$circlesizevar == "TLA" ~ "Square Feet: ",
+                                                   input$circlesizevar == "lotsize" ~ "Lot Size: ",
+                                                   input$circlesizevar == "stories" ~ "Stories: ",
+                                                   
+                                                   input$circlesizevar == "beds" ~ "Bedrooms: ",
+                                                   input$circlesizevar == "baths" ~ "Bathrooms: ",
+                                                   input$colorscalevar == "garagesqft" ~ "Garage Size: ",
+                                                   input$colorscalevar == "rooms" ~ "Rooms",
+                                                   input$colorscalevar ==  "avalue" ~ "Appraised Value"),
+                                if(input$circlesizevar== "price"){currency(price,digits=0L)}
+                                else if (input$circlesizevar== "none"){currency(avalue,digits=0L)}
+                                else {eval(as.name(paste(input$circlesizevar)))}
+                 )
+      )})
+  
+  observe({
+    proxy <- leafletProxy("map", data = sale_data)
+    proxy %>% clearControls()
+    pal <- colorpal()
+    proxy %>% addLegend(position = "bottomleft", pal = pal,
+                        values = ~sale_data[sale_data$property_type ==input$propertytype,input$colorscalevar ], 
+                        title = case_when(input$colorscalevar == "price" ~"Sale Price",
+                                          input$colorscalevar == "yrbuilt" ~ "Year Built",
+                                          input$colorscalevar == "TLA" ~ "Square Feet",
+                                          input$colorscalevar == "lotsize" ~ "Lot Size",
+                                          input$colorscalevar == "stories" ~ "Stories",
+                                          input$colorscalevar == "beds" ~ "Bedrooms: ",
+                                          input$colorscalevar == "baths" ~ "Bathrooms: ",
+                                          input$colorscalevar == "garagesqft" ~ "Garage Size: ",
+                                          input$colorscalevar == "rooms" ~ "Rooms",
+                                          input$colorscalevar ==  "avalue" ~ "Appraised Value"))  
+  })
+  
+  
+  
+  # Regression output
+  output$summary <- renderPrint({
+    fit <- lm(sale_data[,input$outcome] ~ sale_data[,input$indepvar])
+    
+    names(fit$coefficients) <- c("Intercept", input$var2)
+    
+    summary(fit)
+  })
+  
+  # Data output
+  output$tbl = DT::renderDataTable({
+    DT::datatable(sale_data[,c('yrbuilt','price','TLA','beds','baths' )], 
+                  options = list(lengthChange = FALSE))
+  })
+  
+  
+  # Scatterplot output
+  output$scatterplot <- renderPlot({
+    
+    plot(sale_data[,input$indepvar], sale_data[,input$outcome], main="Scatterplot",
+         xlab=input$indepvar, ylab=input$outcome, pch = 21, bg = "lightgray", col = "black", 
+         lwd = 0.9, cex = 1.5)
+    
+    abline(lm(sale_data[,input$outcome] ~ sale_data[,input$indepvar]), col="red")
+    
+    lines(lowess(sale_data[,input$indepvar],sale_data[,input$outcome]), col="blue")
+  }, height=400)
+  
+  
+  # Histogram output var 1
+  output$distribution1 <- renderPlot({
+    
+    hist(sale_data[,input$outcome], main="", xlab=input$outcome, col="lightgray", breaks=6)
+    
+  }, height=300, width=200)
+  
+  # Histogram output var 2
+  output$distribution2 <- renderPlot({
+    
+    hist(sale_data[,input$indepvar], main="", xlab=input$indepvar, col="lightgray", breaks=6)
+    
+  }, height=300, width=200)
+})
+
+
+
+```
+
+## 2.1 App Explanation: the Sidebar
+
+So as can be seen from above, the main purpose of the original idea is quite well fulfilled with the map that can be altered to study many aspects. 
+
+This is thanks to the various input sliders and boxes in the sidebar:
+
+1. `Property Value`: this first filter allows the user to directly find the underpriced houses in the dataset. As can be seen in the provided script, this filter is built on a calculation from the Apraised Value column and the Price column in the data. This is useful to directly check which houses are valuable for investment;
+
+2. `Color Scale Variable`: to be able to analyse the map efficiently, I use 3 dimensions. One of them is the points' color which allows to understand the selected variable with a scaled colour and helps find patterns;
+
+3. `Circle Size Variable`: the second dimension is the size of the points. So along with the color, the user could analyze if another variable is related or unrelated to the variable selected in the Color Scale Variable selected. This is rendered in an efficient way thanks to a function defined in the script explained later;
+
+4. `Year Built Slider`: given this variable in the dataset, it is useful to input a slider here to allow for even further analysis. Because the date elements are less intuitive to map as size or colour, it is handy to filter them from the beginning for the user's need;
+
+5. `Sale Date Slider`: this has the same goal as the above mentionned slider. Filtering according to selling date could be helpful as well;
+
+6. `Sale Price Slider`: if a user is interested in analyzing houses in a specific price range, this is the slider to use. 
+
+7. `Linear Regression`: this is a simple predictive model based on the available inputs. It is an on demand detail that the user can play with to find patterns in the data. The obvious one that is set as default is the Price of houses according to their sizes. Also further features include the ability to understand a bit the distribution of the different variables studied as well as taking a look at the actual data underlying the model as well as the map above it.
+
+
+
+## 2.2 App Explanation: the Leaflet map 
+
+The main part of the application is obviously the map. After many iterations, the best way to exploit the data on hand was to transform the dataset from a Spatial Coordinates format to a regular Latitude-Longitude dataframe.
+Indeed, this was the way to proceed to be able to plot the individual houses on the map and analyse them with the detailed variables provided.  
+
+To be able to gain in optimization for the map, instead of using the reactive and render function to recreate according to the users' inputs, I used LeafletProxy. What this does is actually updating the map instead of recreating it, making the users' experience a better one (especially because the application is giving many interactivity options to the users).
+
+A note that I think is worth mentionning here is that I noticed that when I transformed the data to normal latitude-longitude, the given coordinates were lacking accuracy. I thus had to edit it with the rgal library as can be seen in the code. I had to do some research to figure out how to properly transform the coordinates but there may be a better way to do it.
+
+The provider (CartoDB) as well as the colour palette were chosen to fit in the theme of the whole markdown, and the other details and speficities of the map can be seen in the script provided.
+
+
+## 2.3 App Explanation: Shiuny Dashboard
+
+As can be seen, the great layout is made possible thanks to the use of Shiny Dashboard. The implementation of it can be seen in the script and the references used in the last section of the report.
+
+### 2.4 Interesting Insights
+
+I leave it up to the users and their creativity to play aroung with the application and find some interesting patterns. But here are some ideas of how the application can actually be used:
+
+
+1. Houses with higher sizes in terms of square feets are situated further from the center and they are in general the most expensive ones as can be seen from their size. This pattern is the same for underpriced and over priced houses.
+```{r, echo=FALSE}
+# Define variable containing url
+url1 <- "https://raw.githubusercontent.com/mohamedkhanafer/NeuralNets/master/advanced_r/price_size.png"
+
+url2 <- "https://raw.githubusercontent.com/mohamedkhanafer/NeuralNets/master/advanced_r/yearrbuilt.png"
+
+url3 <- "https://raw.githubusercontent.com/mohamedkhanafer/NeuralNets/master/advanced_r/regression.png"
+
+```
+<center><img src="`r url1`"></center>
+
+2. The houses built in the earlier period (1835 to 1925) seem to have been built further from the center than the newly built houses (in the period 1925 to 1998).
+
+<center><img src="`r url2`"></center>
+
+3. From the regression model, some obvious insights can be confirmed as well. Like in the following 2 analyses where it is confirmed that for the houses in our dataset, the bigger they are, the more expensive they are. And the more rooms they have, the larger the size of the house, showing that rooms are not necessarily built with smaller sizes along the way.
+
+<center><img src="`r url3`"></center>
+
+As mentionned, I leave it to the users to discover more insights and enjoy the process!
+
+# 3. A step further: Application on Real Data for Madrid 
+
+As mentionned in the introduction, I tried taking this concept application and apply it to a real context with current data from Madrid. I thus webscrapped that from Idealista and used the data of over 4000 houses around the Madrid area to create a second mini Shiny application that does most of the functionnality of the main application explained above. This is the result:
+
+```{r }
+sale_data2 <- read.csv(url("https://gist.githubusercontent.com/mohamedkhanafer/6a682f365d2005155336f177870a52f9/raw/9940294c80a716780b5eae18c831e711fba86076/advancedRscrapped"))
+sale_data2$property_type <- as.character(sale_data2[,"property_type"])
+sale_data2$address <- as.character(sale_data2[,"address"])
+sale_data2$baths <- as.numeric(sale_data2[,"baths"])
+sale_data2[,"sale_date"] <- as.Date(as.character(sale_data2[,"sale_date"]),"%y%m%d")
+circle.scaler2 <- function(x){((x-min(x))/(max(x)-min(x)))*200}
+
+################## SHINY APPLICATION: UI ##################
+shinyApp(
+  options = list(height=550),
+  ui <- dashboardPage(
+  skin = "green",
+  dashboardHeader(title = "Madrid Application: Current Data"),
+  
+  dashboardSidebar(
+    selectInput("propertytype", "Property Type", 
+                choices = c("Centro Madrid",
+                            "Arganzuela",
+                            "Chamartin",
+                            "Chamberri",
+                            "Fuencarral",
+                            "Moncloa",
+                            "Retiro",
+                            "Salamanca",
+                            "Tetuan")),
+    
+    selectInput("colorscalevar", "Color Scale Variable",
+                choices = c("Sale Price" = "price",
+                            "Square Feet" = "TLA", 
+                            
+                            "Bedrooms" = "beds", 
+                            "Bathrooms" = "baths")),
+    
+    selectInput("circlesizevar", "Circle Size Variable", 
+                choices = c("Square Feet" = "TLA",
+                            "Sale Price" = "price",
+                            "Bedrooms" = "beds",
+                            "Bathrooms" = "baths",
+                            "None"= "none")),
+    
+    uiOutput("PriceSlider")
+  ),
+  
+  dashboardBody(
+    fluidRow(box(width= 12, leafletOutput("map"))))
+),
+  
+
+  
+################## SHINY APPLICATION: SERVER ##################
+  
+server <- function(input, output, session) {
+  
+  filteredData <- reactive({
+    sale_data2[sale_data2$price >= input$priceslideroutput[1] & 
+                sale_data2$price <= input$priceslideroutput[2] & 
+                sale_data2$property_type == input$propertytype, ]})
+  
+  
+  colorpal <- reactive({
+    colorNumeric("YlGnBu", sale_data2[sale_data2$property_type ==input$propertytype,input$colorscalevar])})
+  
+  output$PriceSlider <- renderUI({
+    sliderInput("priceslideroutput", "Sale Price", min(sale_data2[sale_data2$property_type ==input$propertytype,"price"]), 
+                max(sale_data2[sale_data2$property_type ==input$propertytype,"price"]), 
+                range(sale_data2[sale_data2$property_type ==input$propertytype,"price"]))})
+  
+  output$map <- renderLeaflet({
+    leaflet(sale_data2) %>% 
+      
+      addProviderTiles(providers$CartoDB.Positron, group = "CartoDB") %>% 
+      
+      setView(lat = 40.4182029, lng = -3.706617, zoom = 13.5)})
+  
+  
+  observe({
+    pal <- colorpal()
+    
+    leafletProxy("map", data = filteredData()) %>% clearShapes() %>%
+      addCircles(radius = ~if(input$circlesizevar=="none"){80}
+                 else{circle.scaler2(eval(as.name(paste(input$circlesizevar))))}, 
+                 weight = 0.2, 
+                 color = "#777777", 
+                 fillColor = ~pal(sale_data2[sale_data2$property_type ==input$propertytype,input$colorscalevar]),
+                 fillOpacity = 0.6, 
+                 popup = ~paste(case_when(input$colorscalevar == "price"  ~"Sale Price: ",
+                                          input$colorscalevar == "TLA" ~ "Square Feet: ",
+                                          input$colorscalevar == "beds" ~ "Bedrooms: ",
+                                          input$colorscalevar == "baths" ~ "Bathrooms: ",
+                                          ),
+                                if(input$colorscalevar== "price"){currency(price,digits=0L)}
+                                else {eval(as.name(paste(input$colorscalevar)))},
+                                '<br>' , case_when(input$circlesizevar == "none"  ~"Address: ",
+                                                   input$circlesizevar == "price"  ~"Sale Price:",
+                                                   input$circlesizevar == "TLA" ~ "Square Feet: ",
+                                                   input$circlesizevar == "beds" ~ "Bedrooms: ",
+                                                   input$circlesizevar == "baths" ~ "Bathrooms: "),
+                                if(input$circlesizevar== "price"){currency(price,digits=0L)}
+                                else if (input$circlesizevar== "none"){address}
+                                else {eval(as.name(paste(input$circlesizevar)))}
+                 )
+)})
+  
+  observe({
+    proxy <- leafletProxy("map", data = sale_data2)
+    proxy %>% clearControls()
+    pal <- colorpal()
+    proxy %>% addLegend(position = "bottomleft", pal = pal,
+                        values = ~sale_data2[sale_data2$property_type ==input$propertytype,input$colorscalevar ], 
+                        title = case_when(input$colorscalevar == "price" ~"Sale Price",
+                                          input$colorscalevar == "TLA" ~ "Square Feet",
+                                          input$colorscalevar == "beds" ~ "Bedrooms: ",
+                                          input$colorscalevar == "baths" ~ "Bathrooms: "))  
+  })})
+
+```
+
+## 3.1 A note on the Webscrapping
+
+As the logic of the application is same as the one above, I here focus a little bit on the webscrapping process I went through.
+
+So as mentionned, the data comes from Idealista, and I used the ScrapeStorm application to do the job. The first problem I faced was that the number of listings the website allows anyone to access, which is limited to 1.800 listings. To go around this, I refined my search to smaller regions within Madrid, allowing me to access up to 1800 listings in those sub regions. The second challenge I faced  was going around the Captchas set up by the website. Usuallay after extracting 500 listings, the web scrapper would be stopped and would have to start from the beginning. However, after several trials, I noticed that the place of the listings on Idealista were not changed, I could thus resume the webscraping by starting on the page in which the Captach was faced. 
+
+I tried getting the most out of each listing, and got unstructured data for around 12.000 houses. I applied quick and sometimes not very efficient cleaning techniques for time purposes and got down to around 4.000 houses with somewhat similar and "clean" information. However, the most important data here, the geographical coordinates, were missing. I thus subscribed to and used the GPSVisualizer tool to get geographical locations from the addresses of the houses. This great freely available tool did a good job but some innacuracies can be seen on the map. 
+
+## 3.2 Going forward with the Application
+
+With more time on hand, I plan to clean the data in a better way to be able to keep data on more houses and have a better result. I also plan on applying better cleaning to get more variables that were harder to extract (availability of a pool, a balcony, type of houses, etc.). 
+
+I also plan on integrating a better model for predicting house prices (as in the main application) for the Madrid Application. And also, with the newly generated features, I plan on making the application a robust tool by potentially adding images of the houses to the pop ups on the map.
+
+
+# 4. Conclusion
+
+This project has allowed me to discover the power of Shiny from various perspectives. Although the learning curve was steep at the beginning, with some practice and with the great ressources available online, the magic is quickly unlocked. I was able to combine ideas and codes from various sources (cited below) and come up with the idea I first envisionned. 
+
+Going forward, I would like to further improve those applications and publish them.
+
+# 5. References
+
+My work could not have been possible if it was for the following great sources to which I am greatly thankful. I have made extensive use of the codes and insights from the following sources:
+
+- `Interactive Maps with R Shiny and Leaflet`. I used this great blogpost for the backbone of my code: http://samveverka.com/interactive-maps-with-r-shiny-and-leaflet-2017-milwaukee-property-sales/
+
+- `A simple regression app`. This is the basis of the code I used for the regression tab in my first application: https://bookdown.org/paulcbauer/idv2/8-20-example-a-simple-regression-app.html
+
+- `Using Leaflet with Shiny`. This greatly helped me in my understanding for integrating Leaflet into Shiny: https://rstudio.github.io/leaflet/shiny.html
+
+- `Embedded Shiny apps`. For the embedding of the Shiny application into the markdown: https://bookdown.org/yihui/rmarkdown/shiny-embedded.html
+
+- `Convert multiple addresses to GPS coordinates`. The tool mentionned in the article for getting the coordinates of the second application: https://www.gpsvisualizer.com/geocoder/
+
+- `Shiny Dashbord`. I was able to build it by combining insights from various tutorials, mainly including the following ones: : https://www.youtube.com/watch?v=1MHX1s5bb6w / https://www.youtube.com/watch?v=41jmGq7ALMY&t=154s / https://www.youtube.com/watch?v=fUXBL5bk20M&list=PLH6mU1kedUy-aGYi-w1XqSiGtViFK9NpI&index=7 / https://www.youtube.com/watch?v=zW_DiYVrzxU
+
+- `Creating Pretty Documents from R Markdown`. I used the following source to improve the appearance of the markdown: https://cran.r-project.org/web/packages/prettydoc/vignettes/tactile.html
+
+- Other useful links I consulted included the following: https://medium.com/@joyplumeri/how-to-make-interactive-maps-in-r-shiny-brief-tutorial-c2e1ef0447da / https://medium.com/@urban_institute/building-a-point-and-click-mapping-tool-in-r-shiny-7aa4e99ac913 / https://medium.com/nivi-inc/building-your-own-mturk-style-app-in-r-using-shiny-flexdashboard-3beacba50e09 / 
+
+
+
+
+
+
