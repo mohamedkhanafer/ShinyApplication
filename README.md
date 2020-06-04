@@ -6,9 +6,8 @@ I thus developped a Shiny Application that integrates an advanced and interactiv
 
 I developped this application using the Lucas County OH Housing dataset from the spData library, and then did a second application on real data for properties around Madrid.
 
-The result of the Shiny application is the following:
-
+The result of the Shiny application is the following: https://mohamedkhanafer.shinyapps.io/Housing_Data_markdown/
 ![Final Result](/result_app.png)
 
-The full report and step by step process can be found in the markdown shared here or on the following website: https://mohamedkhanafer.shinyapps.io/Housing_Data_markdown/. The code for the individual applications can be found in each of the shared folders in the repository.
+The full report and step by step process can be found in the markdown shared here and on the above link. The code for the individual applications can be found in each of the shared folders in the repository.
 
